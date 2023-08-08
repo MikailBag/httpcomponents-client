@@ -36,6 +36,7 @@ import java.security.cert.CertificateEncodingException;
 import java.util.Arrays;
 import java.util.Locale;
 import java.util.Random;
+import java.util.concurrent.locks.ReentrantLock;
 
 import javax.crypto.Cipher;
 import javax.crypto.spec.SecretKeySpec;
@@ -298,23 +299,19 @@ final class NTLMEngineImpl implements NTLMEngine {
     /** Calculate a challenge block */
     private static byte[] makeRandomChallenge(final Random random) {
         final byte[] rval = new byte[8];
-        synchronized (random) {
-            random.nextBytes(rval);
-        }
+        random.nextBytes(rval);
         return rval;
     }
 
     /** Calculate a 16-byte secondary key */
     private static byte[] makeSecondaryKey(final Random random) {
         final byte[] rval = new byte[16];
-        synchronized (random) {
-            random.nextBytes(rval);
-        }
+        random.nextBytes(rval);
         return rval;
     }
 
     static class CipherGen {
-
+        final ReentrantLock randomLock = new ReentrantLock();
         final Random random;
         final long currentTime;
 
@@ -382,7 +379,12 @@ final class NTLMEngineImpl implements NTLMEngine {
         /** Calculate and return client challenge */
         public byte[] getClientChallenge() {
             if (clientChallenge == null) {
-                clientChallenge = makeRandomChallenge(random);
+                randomLock.lock();
+                try {
+                    clientChallenge = makeRandomChallenge(random);
+                } finally {
+                    randomLock.unlock();
+                }
             }
             return clientChallenge;
         }
@@ -390,7 +392,12 @@ final class NTLMEngineImpl implements NTLMEngine {
         /** Calculate and return second client challenge */
         public byte[] getClientChallenge2() {
             if (clientChallenge2 == null) {
-                clientChallenge2 = makeRandomChallenge(random);
+                randomLock.lock();
+                try {
+                    clientChallenge2 = makeRandomChallenge(random);
+                } finally {
+                    randomLock.unlock();
+                }
             }
             return clientChallenge2;
         }
@@ -398,7 +405,12 @@ final class NTLMEngineImpl implements NTLMEngine {
         /** Calculate and return random secondary key */
         public byte[] getSecondaryKey() {
             if (secondaryKey == null) {
-                secondaryKey = makeSecondaryKey(random);
+                randomLock.lock();
+                try {
+                    secondaryKey = makeSecondaryKey(random);
+                } finally {
+                    randomLock.unlock();
+                }
             }
             return secondaryKey;
         }
@@ -494,7 +506,12 @@ final class NTLMEngineImpl implements NTLMEngine {
         public byte[] getLMv2Response()
             throws NTLMEngineException {
             if (lmv2Response == null) {
-                lmv2Response = lmv2Response(getLMv2Hash(),challenge,getClientChallenge());
+                randomLock.lock();
+                try {
+                    lmv2Response = lmv2Response(getLMv2Hash(), challenge, getClientChallenge());
+                } finally {
+                    randomLock.unlock();
+                }
             }
             return lmv2Response;
         }

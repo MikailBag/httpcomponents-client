@@ -28,6 +28,7 @@ package org.apache.hc.client5.http.impl.classic;
 
 import java.util.HashMap;
 import java.util.Map;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hc.client5.http.HttpRoute;
 import org.apache.hc.client5.http.classic.BackoffManager;
@@ -63,6 +64,7 @@ public class AIMDBackoffManager implements BackoffManager {
     private final Clock clock;
     private final Map<HttpRoute, Long> lastRouteProbes;
     private final Map<HttpRoute, Long> lastRouteBackoffs;
+    private final ReentrantLock lock = new ReentrantLock();
     private TimeValue coolDown = TimeValue.ofSeconds(5L);
     private double backoffFactor = 0.5;
     private int cap = 2; // Per RFC 2616 sec 8.1.4
@@ -87,7 +89,8 @@ public class AIMDBackoffManager implements BackoffManager {
 
     @Override
     public void backOff(final HttpRoute route) {
-        synchronized(connPerRoute) {
+        lock.lock();
+        try {
             final int curr = connPerRoute.getMaxPerRoute(route);
             final Long lastUpdate = getLastUpdate(lastRouteBackoffs, route);
             final long now = clock.getCurrentTime();
@@ -96,6 +99,8 @@ public class AIMDBackoffManager implements BackoffManager {
             }
             connPerRoute.setMaxPerRoute(route, getBackedOffPoolSize(curr));
             lastRouteBackoffs.put(route, now);
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -108,7 +113,8 @@ public class AIMDBackoffManager implements BackoffManager {
 
     @Override
     public void probe(final HttpRoute route) {
-        synchronized(connPerRoute) {
+        lock.lock();
+        try {
             final int curr = connPerRoute.getMaxPerRoute(route);
             final int max = (curr >= cap) ? cap : curr + 1;
             final Long lastProbe = getLastUpdate(lastRouteProbes, route);
@@ -120,6 +126,8 @@ public class AIMDBackoffManager implements BackoffManager {
             }
             connPerRoute.setMaxPerRoute(route, max);
             lastRouteProbes.put(route, now);
+        } finally {
+            lock.unlock();
         }
     }
 

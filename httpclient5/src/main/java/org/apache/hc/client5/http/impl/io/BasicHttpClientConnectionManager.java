@@ -35,6 +35,7 @@ import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicLong;
 import java.util.concurrent.atomic.AtomicReference;
+import java.util.concurrent.locks.ReentrantLock;
 
 import org.apache.hc.client5.http.DnsResolver;
 import org.apache.hc.client5.http.HttpRoute;
@@ -115,6 +116,7 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
     private TlsConfig tlsConfig;
 
     private final AtomicBoolean closed;
+    private final ReentrantLock lock = new ReentrantLock();
 
     private static Registry<ConnectionSocketFactory> getDefaultRegistry() {
         return RegistryBuilder.<ConnectionSocketFactory>create()
@@ -184,40 +186,70 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
         return state;
     }
 
-    public synchronized SocketConfig getSocketConfig() {
-        return socketConfig;
+    public SocketConfig getSocketConfig() {
+        lock.lock();
+        try {
+            return socketConfig;
+        } finally {
+            lock.unlock();
+        }
     }
 
-    public synchronized void setSocketConfig(final SocketConfig socketConfig) {
-        this.socketConfig = socketConfig != null ? socketConfig : SocketConfig.DEFAULT;
-    }
-
-    /**
-     * @since 5.2
-     */
-    public synchronized ConnectionConfig getConnectionConfig() {
-        return connectionConfig;
-    }
-
-    /**
-     * @since 5.2
-     */
-    public synchronized void setConnectionConfig(final ConnectionConfig connectionConfig) {
-        this.connectionConfig = connectionConfig != null ? connectionConfig : ConnectionConfig.DEFAULT;
+    public void setSocketConfig(final SocketConfig socketConfig) {
+        lock.lock();
+        try {
+            this.socketConfig = socketConfig != null ? socketConfig : SocketConfig.DEFAULT;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * @since 5.2
      */
-    public synchronized TlsConfig getTlsConfig() {
-        return tlsConfig;
+    public ConnectionConfig getConnectionConfig() {
+        lock.lock();
+        try {
+            return connectionConfig;
+        } finally {
+            lock.unlock();
+        }
     }
 
     /**
      * @since 5.2
      */
-    public synchronized void setTlsConfig(final TlsConfig tlsConfig) {
-        this.tlsConfig = tlsConfig != null ? tlsConfig : TlsConfig.DEFAULT;
+    public void setConnectionConfig(final ConnectionConfig connectionConfig) {
+        lock.lock();
+        try {
+            this.connectionConfig = connectionConfig != null ? connectionConfig : ConnectionConfig.DEFAULT;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * @since 5.2
+     */
+    public TlsConfig getTlsConfig() {
+        lock.lock();
+        try {
+            return tlsConfig;
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    /**
+     * @since 5.2
+     */
+    public void setTlsConfig(final TlsConfig tlsConfig) {
+        lock.lock();
+        try {
+            this.tlsConfig = tlsConfig != null ? tlsConfig : TlsConfig.DEFAULT;
+        } finally {
+            lock.unlock();
+        }
     }
 
     public LeaseRequest lease(final String id, final HttpRoute route, final Object state) {
@@ -246,13 +278,18 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
         };
     }
 
-    private synchronized void closeConnection(final CloseMode closeMode) {
-        if (this.conn != null) {
-            if (LOG.isDebugEnabled()) {
-                LOG.debug("{} Closing connection {}", id, closeMode);
+    private void closeConnection(final CloseMode closeMode) {
+        lock.lock();
+        try {
+            if (this.conn != null) {
+                if (LOG.isDebugEnabled()) {
+                    LOG.debug("{} Closing connection {}", id, closeMode);
+                }
+                this.conn.close(closeMode);
+                this.conn = null;
             }
-            this.conn.close(closeMode);
-            this.conn = null;
+        } finally {
+            lock.unlock();
         }
     }
 
@@ -298,7 +335,7 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
         }
     }
 
-    synchronized ManagedHttpClientConnection getConnection(final HttpRoute route, final Object state) throws IOException {
+    private ManagedHttpClientConnection getConnectionImpl(final HttpRoute route, final Object state) throws IOException {
         Asserts.check(!isClosed(), "Connection manager has been shut down");
         if (LOG.isDebugEnabled()) {
             LOG.debug("{} Get connection for route {}", id, route);
@@ -324,6 +361,15 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
         return this.conn;
     }
 
+    ManagedHttpClientConnection getConnection(final HttpRoute route, final Object state) throws IOException {
+        lock.lock();
+        try {
+            return getConnectionImpl(route, state);
+        } finally {
+            lock.unlock();
+        }
+    }
+
     private InternalConnectionEndpoint cast(final ConnectionEndpoint endpoint) {
         if (endpoint instanceof InternalConnectionEndpoint) {
             return (InternalConnectionEndpoint) endpoint;
@@ -331,8 +377,7 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
         throw new IllegalStateException("Unexpected endpoint class: " + endpoint.getClass());
     }
 
-    @Override
-    public synchronized void release(final ConnectionEndpoint endpoint, final Object state, final TimeValue keepAlive) {
+    private void releaseImpl(final ConnectionEndpoint endpoint, final Object state, final TimeValue keepAlive) {
         Args.notNull(endpoint, "Managed endpoint");
         final InternalConnectionEndpoint internalEndpoint = cast(endpoint);
         final ManagedHttpClientConnection conn = internalEndpoint.detach();
@@ -377,7 +422,16 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
     }
 
     @Override
-    public synchronized void connect(final ConnectionEndpoint endpoint, final TimeValue timeout, final HttpContext context) throws IOException {
+    public void release(final ConnectionEndpoint endpoint, final Object state, final TimeValue keepAlive) {
+        lock.lock();
+        try {
+            releaseImpl(endpoint, state, keepAlive);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    private void connectImpl(final ConnectionEndpoint endpoint, final TimeValue timeout, final HttpContext context) throws IOException {
         Args.notNull(endpoint, "Endpoint");
 
         final InternalConnectionEndpoint internalEndpoint = cast(endpoint);
@@ -414,42 +468,67 @@ public class BasicHttpClientConnectionManager implements HttpClientConnectionMan
     }
 
     @Override
-    public synchronized void upgrade(
+    public void connect(final ConnectionEndpoint endpoint, final TimeValue timeout, final HttpContext context) throws IOException {
+        lock.lock();
+        try {
+            connectImpl(endpoint, timeout, context);
+        } finally {
+            lock.unlock();
+        }
+    }
+
+    @Override
+    public void upgrade(
             final ConnectionEndpoint endpoint,
             final HttpContext context) throws IOException {
-        Args.notNull(endpoint, "Endpoint");
-        Args.notNull(route, "HTTP route");
-        final InternalConnectionEndpoint internalEndpoint = cast(endpoint);
-        this.connectionOperator.upgrade(
-                internalEndpoint.getConnection(),
-                internalEndpoint.getRoute().getTargetHost(),
-                tlsConfig,
-                context);
-    }
-
-    public synchronized void closeExpired() {
-        if (isClosed()) {
-            return;
-        }
-        if (!this.leased) {
-            checkExpiry();
+        lock.lock();
+        try {
+            Args.notNull(endpoint, "Endpoint");
+            Args.notNull(route, "HTTP route");
+            final InternalConnectionEndpoint internalEndpoint = cast(endpoint);
+            this.connectionOperator.upgrade(
+                    internalEndpoint.getConnection(),
+                    internalEndpoint.getRoute().getTargetHost(),
+                    tlsConfig,
+                    context);
+        } finally {
+            lock.unlock();
         }
     }
 
-    public synchronized void closeIdle(final TimeValue idleTime) {
-        Args.notNull(idleTime, "Idle time");
-        if (isClosed()) {
-            return;
+    public void closeExpired() {
+        lock.lock();
+        try {
+            if (isClosed()) {
+                return;
+            }
+            if (!this.leased) {
+                checkExpiry();
+            }
+        } finally {
+            lock.unlock();
         }
-        if (!this.leased) {
-            long time = idleTime.toMilliseconds();
-            if (time < 0) {
-                time = 0;
+    }
+
+    public void closeIdle(final TimeValue idleTime) {
+        lock.lock();
+        try {
+            Args.notNull(idleTime, "Idle time");
+            if (isClosed()) {
+                return;
             }
-            final long deadline = System.currentTimeMillis() - time;
-            if (this.updated <= deadline) {
-                closeConnection(CloseMode.GRACEFUL);
+            if (!this.leased) {
+                long time = idleTime.toMilliseconds();
+                if (time < 0) {
+                    time = 0;
+                }
+                final long deadline = System.currentTimeMillis() - time;
+                if (this.updated <= deadline) {
+                    closeConnection(CloseMode.GRACEFUL);
+                }
             }
+        } finally {
+            lock.unlock();
         }
     }
 
